@@ -18,7 +18,10 @@ export default async function handler(req, res) {
   form.parse(req, async (err, fields, files) => {
     if (err) {
       console.error("Form parse error:", err);
-      return res.status(500).json({ error: "Error parsing the form" });
+      return res.status(500).json({
+        error: "Error parsing the form",
+        detail: err.message || String(err),
+      });
     }
 
     const file = files.file;
@@ -26,7 +29,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // Read env vars (you'll set these in Vercel)
+    // Read env vars (set in Vercel)
     const BUNNY_STORAGE_ZONE = process.env.BUNNY_STORAGE_ZONE;
     const BUNNY_STORAGE_HOST = process.env.BUNNY_STORAGE_HOST;
     const BUNNY_STORAGE_PASSWORD = process.env.BUNNY_STORAGE_PASSWORD;
@@ -41,8 +44,16 @@ export default async function handler(req, res) {
       !BUNNY_STORAGE_PASSWORD ||
       !BUNNY_PULL_ZONE_HOST
     ) {
-      console.error("Missing Bunny env vars");
-      return res.status(500).json({ error: "Server misconfigured" });
+      console.error("Missing Bunny env vars", {
+        BUNNY_STORAGE_ZONE,
+        BUNNY_STORAGE_HOST,
+        hasPassword: !!BUNNY_STORAGE_PASSWORD,
+        BUNNY_PULL_ZONE_HOST,
+      });
+      return res.status(500).json({
+        error: "Server misconfigured",
+        detail: "Missing one or more Bunny env vars",
+      });
     }
 
     try {
@@ -52,6 +63,8 @@ export default async function handler(req, res) {
 
       // 1) Upload to Bunny Storage
       const bunnyUploadUrl = `https://${BUNNY_STORAGE_HOST}/${BUNNY_STORAGE_ZONE}/${BUNNY_UPLOAD_FOLDER}/${encodedFileName}`;
+
+      console.log("Uploading to Bunny:", bunnyUploadUrl);
 
       const fileStream = fs.createReadStream(file.filepath);
 
@@ -66,8 +79,12 @@ export default async function handler(req, res) {
 
       if (!bunnyResponse.ok) {
         const errorText = await bunnyResponse.text();
-        console.error("Upload failed:", bunnyResponse.status, errorText);
-        return res.status(500).json({ error: "Upload failed" });
+        console.error("Bunny upload failed:", bunnyResponse.status, errorText);
+        return res.status(500).json({
+          error: "Upload failed",
+          status: bunnyResponse.status,
+          detail: errorText,
+        });
       }
 
       // 2) Build public CDN URL
@@ -84,21 +101,28 @@ export default async function handler(req, res) {
         };
 
         try {
-          await fetch(ZAPIER_WEBHOOK_URL, {
+          const zapRes = await fetch(ZAPIER_WEBHOOK_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           });
+
+          if (!zapRes.ok) {
+            const zapText = await zapRes.text();
+            console.error("Zapier webhook error:", zapRes.status, zapText);
+          }
         } catch (zapErr) {
-          console.error("Zapier webhook error:", zapErr);
-          // but don't fail the upload just because Zapier choked
+          console.error("Zapier webhook exception:", zapErr);
         }
       }
 
       return res.status(200).json({ success: true, fileUrl });
     } catch (uploadError) {
       console.error("Upload error:", uploadError);
-      return res.status(500).json({ error: "Server error" });
+      return res.status(500).json({
+        error: "Server error",
+        detail: uploadError.message || String(uploadError),
+      });
     }
   });
 }
