@@ -24,10 +24,21 @@ export default async function handler(req, res) {
       });
     }
 
-    const file = files.file;
+    let file = files.file;
     if (!file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
+
+    // 🔧 Normalize in case formidable returns an array
+    if (Array.isArray(file)) {
+      file = file[0];
+    }
+
+    // Fallback filename if originalFilename is missing
+    const originalName =
+      file.originalFilename || file.newFilename || `upload-${Date.now()}`;
+    const cleanFileName = originalName.replace(/\s+/g, "_");
+    const encodedFileName = encodeURIComponent(cleanFileName);
 
     // Read env vars (set in Vercel)
     const BUNNY_STORAGE_ZONE = process.env.BUNNY_STORAGE_ZONE;
@@ -57,13 +68,8 @@ export default async function handler(req, res) {
     }
 
     try {
-      // Clean filename and avoid spaces
-      const cleanFileName = file.originalFilename.replace(/\s+/g, "_");
-      const encodedFileName = encodeURIComponent(cleanFileName);
-
       // 1) Upload to Bunny Storage
       const bunnyUploadUrl = `https://${BUNNY_STORAGE_HOST}/${BUNNY_STORAGE_ZONE}/${BUNNY_UPLOAD_FOLDER}/${encodedFileName}`;
-
       console.log("Uploading to Bunny:", bunnyUploadUrl);
 
       const fileStream = fs.createReadStream(file.filepath);
