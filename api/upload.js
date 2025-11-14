@@ -13,7 +13,11 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const form = formidable({ multiples: false });
+  // Increase max size if you want (example: 25 MB)
+  const form = formidable({
+    multiples: false,
+    maxFileSize: 25 * 1024 * 1024, // 25 MB, adjust as needed
+  });
 
   form.parse(req, async (err, fields, files) => {
     if (err) {
@@ -29,18 +33,26 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // 🔧 Normalize in case formidable returns an array
-    if (Array.isArray(file)) {
-      file = file[0];
-    }
+    // 🔧 Formidable sometimes gives arrays for fields & files
+    if (Array.isArray(file)) file = file[0];
 
-    // Fallback filename if originalFilename is missing
+    // Normalise helper for fields
+    const getField = (obj, key) => {
+      const val = obj[key];
+      if (Array.isArray(val)) return val[0];
+      return val ?? "";
+    };
+
+    const slot = getField(fields, "slot");                 // e.g. "UPLOAD_FIELD_1.1"
+    const submissionId = getField(fields, "submission_id"); // our session ID
+
+    // Fallback filename
     const originalName =
       file.originalFilename || file.newFilename || `upload-${Date.now()}`;
     const cleanFileName = originalName.replace(/\s+/g, "_");
     const encodedFileName = encodeURIComponent(cleanFileName);
 
-    // Read env vars (set in Vercel)
+    // Env vars from Vercel
     const BUNNY_STORAGE_ZONE = process.env.BUNNY_STORAGE_ZONE;
     const BUNNY_STORAGE_HOST = process.env.BUNNY_STORAGE_HOST;
     const BUNNY_STORAGE_PASSWORD = process.env.BUNNY_STORAGE_PASSWORD;
@@ -93,18 +105,18 @@ export default async function handler(req, res) {
         });
       }
 
-      // 2) Build public CDN URL
+      // 2) Public CDN URL
       const fileUrl = `https://${BUNNY_PULL_ZONE_HOST}/${BUNNY_UPLOAD_FOLDER}/${encodedFileName}`;
 
-      // 3) Optional: send to Zapier (for Notion)
+      // 3) Send to Zapier with submission_id + slot
       if (ZAPIER_WEBHOOK_URL) {
         const payload = {
-          name: fields.name || "",
-          email: fields.email || "",
-          phone: fields.phone || "",
-          notes: fields.notes || "",
-          file_url: fileUrl,
+          submission_id: submissionId || "", // 🔥 key we care about
+          slot: slot || "",                  // which upload field (UPLOAD_FIELD_1.1 etc)
+          file_url: fileUrl,                 // Bunny CDN URL
         };
+
+        console.log("Sending payload to Zapier:", payload);
 
         try {
           const zapRes = await fetch(ZAPIER_WEBHOOK_URL, {
