@@ -13,46 +13,20 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // Increase max size if you want (example: 25 MB)
-  const form = formidable({
-    multiples: false,
-    maxFileSize: 25 * 1024 * 1024, // 25 MB, adjust as needed
-  });
+  const form = formidable({ multiples: false });
 
   form.parse(req, async (err, fields, files) => {
     if (err) {
       console.error("Form parse error:", err);
-      return res.status(500).json({
-        error: "Error parsing the form",
-        detail: err.message || String(err),
-      });
+      return res.status(500).json({ error: "Error parsing the form" });
     }
 
-    let file = files.file;
+    const file = files.file;
     if (!file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // 🔧 Formidable sometimes gives arrays for fields & files
-    if (Array.isArray(file)) file = file[0];
-
-    // Normalise helper for fields
-    const getField = (obj, key) => {
-      const val = obj[key];
-      if (Array.isArray(val)) return val[0];
-      return val ?? "";
-    };
-
-    const slot = getField(fields, "slot");                 // e.g. "UPLOAD_FIELD_1.1"
-    const submissionId = getField(fields, "submission_id"); // our session ID
-
-    // Fallback filename
-    const originalName =
-      file.originalFilename || file.newFilename || `upload-${Date.now()}`;
-    const cleanFileName = originalName.replace(/\s+/g, "_");
-    const encodedFileName = encodeURIComponent(cleanFileName);
-
-    // Env vars from Vercel
+    // Read env vars (you'll set these in Vercel)
     const BUNNY_STORAGE_ZONE = process.env.BUNNY_STORAGE_ZONE;
     const BUNNY_STORAGE_HOST = process.env.BUNNY_STORAGE_HOST;
     const BUNNY_STORAGE_PASSWORD = process.env.BUNNY_STORAGE_PASSWORD;
@@ -67,22 +41,19 @@ export default async function handler(req, res) {
       !BUNNY_STORAGE_PASSWORD ||
       !BUNNY_PULL_ZONE_HOST
     ) {
-      console.error("Missing Bunny env vars", {
-        BUNNY_STORAGE_ZONE,
-        BUNNY_STORAGE_HOST,
-        hasPassword: !!BUNNY_STORAGE_PASSWORD,
-        BUNNY_PULL_ZONE_HOST,
-      });
-      return res.status(500).json({
-        error: "Server misconfigured",
-        detail: "Missing one or more Bunny env vars",
-      });
+      console.error("Missing Bunny env vars");
+      return res.status(500).json({ error: "Server misconfigured" });
     }
 
     try {
+      // Clean filename and avoid spaces
+      const cleanFileName = file.originalFilename.replace(/\s+/g, "_");
+      const encodedFileName = encodeURIComponent(cleanFileName);
+
       // 1) Upload to Bunny Storage
+      // NOTE: Using `fields.path` (the slot name) here would be more accurate for folder structure,
+      // but sticking to the original BUNNY_UPLOAD_FOLDER for consistency.
       const bunnyUploadUrl = `https://${BUNNY_STORAGE_HOST}/${BUNNY_STORAGE_ZONE}/${BUNNY_UPLOAD_FOLDER}/${encodedFileName}`;
-      console.log("Uploading to Bunny:", bunnyUploadUrl);
 
       const fileStream = fs.createReadStream(file.filepath);
 
@@ -97,50 +68,50 @@ export default async function handler(req, res) {
 
       if (!bunnyResponse.ok) {
         const errorText = await bunnyResponse.text();
-        console.error("Bunny upload failed:", bunnyResponse.status, errorText);
-        return res.status(500).json({
-          error: "Upload failed",
-          status: bunnyResponse.status,
-          detail: errorText,
-        });
+        console.error("Upload failed:", bunnyResponse.status, errorText);
+        return res.status(500).json({ error: "Upload failed" });
       }
 
-      // 2) Public CDN URL
+      // 2) Build public CDN URL
       const fileUrl = `https://${BUNNY_PULL_ZONE_HOST}/${BUNNY_UPLOAD_FOLDER}/${encodedFileName}`;
 
-      // 3) Send to Zapier with submission_id + slot
+      // 3) Optional: send to Zapier (for Notion)
       if (ZAPIER_WEBHOOK_URL) {
+        // --- MODIFICATION START ---
+        // Grab the necessary fields from the client-side form data
+        const submissionId = fields.submission_id || "";
+        const slot = fields.path || ""; // The client-side uses 'path' to mean 'slot'
+        
         const payload = {
-          submission_id: submissionId || "", // 🔥 key we care about
-          slot: slot || "",                  // which upload field (UPLOAD_FIELD_1.1 etc)
-          file_url: fileUrl,                 // Bunny CDN URL
-        };
+          name: fields.name || "",
+          email: fields.email || "",
+          phone: fields.phone || "",
+          notes: fields.notes || "",
+          
+          // ADDED THE CRITICAL FIELDS
+          submission_id: submissionId,
+          slot: slot,
 
-        console.log("Sending payload to Zapier:", payload);
+          file_url: fileUrl,
+        };
+        // --- MODIFICATION END ---
 
         try {
-          const zapRes = await fetch(ZAPIER_WEBHOOK_URL, {
+          await fetch(ZAPIER_WEBHOOK_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           });
-
-          if (!zapRes.ok) {
-            const zapText = await zapRes.text();
-            console.error("Zapier webhook error:", zapRes.status, zapText);
-          }
         } catch (zapErr) {
-          console.error("Zapier webhook exception:", zapErr);
+          console.error("Zapier webhook error:", zapErr);
+          // but don't fail the upload just because Zapier choked
         }
       }
 
       return res.status(200).json({ success: true, fileUrl });
     } catch (uploadError) {
       console.error("Upload error:", uploadError);
-      return res.status(500).json({
-        error: "Server error",
-        detail: uploadError.message || String(uploadError),
-      });
+      return res.status(500).json({ error: "Server error" });
     }
   });
 }
